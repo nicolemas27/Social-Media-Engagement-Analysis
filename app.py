@@ -5,9 +5,11 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.gridspec import GridSpec
+import shap
 import warnings
 warnings.filterwarnings("ignore")
 
+# ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="EngageIQ · Social Media Analytics",
     page_icon="📊",
@@ -15,7 +17,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom CSS 
+# ── Custom CSS ──────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap');
@@ -151,16 +153,42 @@ hr { border-color: #2a2a38 !important; }
 """, unsafe_allow_html=True)
 
 
-# ── Load model ──────────────────────────────────────────────────────────────────
+# ── Load models ─────────────────────────────────────────────────────────────────
+MODEL_FILES = {
+    "Linear Regression": "linear_regression_model_with_features.pkl",
+    "XGBoost":           "xgb_model.pkl",
+    "LightGBM":          "lgbm_model.pkl",
+}
+SHAP_FILES = {
+    "Linear Regression": "shap_explainer.pkl",
+    "XGBoost":           "shap_explainer_xgb.pkl",
+    "LightGBM":          "shap_explainer_lgbm.pkl",
+}
+MODEL_R2 = {
+    "Linear Regression": 0.693,
+    "XGBoost":           None,
+    "LightGBM":          None,
+}
+
 @st.cache_resource
-def load_model():
-    return joblib.load("linear_regression_model_with_features.pkl")
+def load_model(name):
+    return joblib.load(MODEL_FILES[name])
+
+@st.cache_resource
+def load_explainer(name):
+    return joblib.load(SHAP_FILES[name])
+
+@st.cache_resource
+def load_preprocessor():
+    return joblib.load("preprocessor.pkl")
 
 try:
-    model = load_model()
-    model_loaded = True
+    shap_preprocessor = load_preprocessor()
 except FileNotFoundError:
-    model_loaded = False
+    shap_preprocessor = None
+
+NUMERIC_FEATURES = ["Likes", "Comments", "Shares", "Impressions", "Reach", "Audience Age", "Hour"]
+CATEGORICAL_FEATURES = ["Platform", "Post Type", "Audience Gender", "Sentiment", "Day", "Audience Location", "time_of_day", "Age_group"]
 
 
 # ── Benchmark data (derived from EDA) ──────────────────────────────────────────
@@ -185,6 +213,22 @@ with st.sidebar:
     st.markdown("## ⚡ Post Parameters")
     st.markdown("---")
 
+    st.markdown("**🤖 Model**")
+    selected_model = st.selectbox("Prediction Model", list(MODEL_FILES.keys()))
+    try:
+        model = load_model(selected_model)
+        model_loaded = True
+    except FileNotFoundError:
+        model_loaded = False
+        st.warning(f"{selected_model} not found. Train and save it first.")
+
+    try:
+        shap_explainer = load_explainer(selected_model)
+        shap_loaded = True
+    except FileNotFoundError:
+        shap_loaded = False
+
+    st.markdown("---")
     st.markdown("**📈 Performance Metrics**")
     likes       = st.number_input("Likes",        min_value=0, value=500)
     comments    = st.number_input("Comments",     min_value=0, value=250)
@@ -249,8 +293,7 @@ input_df = pd.DataFrame([{
     "time_of_day": time_of_day, "Age_group": age_group,
 }])
 
-
-# ── Header ───────────────────────────────────────────────────────────────────────
+# Header
 st.markdown("# EngageIQ")
 st.markdown("*Social Media Engagement Intelligence · Powered by PySpark + scikit-learn*")
 st.markdown("---")
@@ -472,7 +515,6 @@ with tab2:
         if day not in ["Friday", "Saturday"]:
             changes.append("Post on **Friday or Saturday** for highest reach")
 
-        # Also tell them how their platform/post type compares to the best
         best_platform  = max(BENCHMARKS["Platform"],  key=BENCHMARKS["Platform"].get)
         best_post_type = max(BENCHMARKS["Post Type"], key=BENCHMARKS["Post Type"].get)
         if platform != best_platform:
@@ -491,6 +533,49 @@ with tab2:
                 st.markdown(f"<div class='insight-card'>→ {c_html}</div>", unsafe_allow_html=True)
         else:
             st.success("✅ Your configuration is already optimal!")
+
+        # ── SHAP Explainability ──
+        if shap_loaded:
+            st.markdown("---")
+            st.markdown("#### 🔍 Why This Prediction? (Feature Impact)")
+            st.markdown("Each bar shows how much a feature pushed the prediction **up** (green) or **down** (red) from the baseline.")
+
+            try:
+                input_transformed = shap_preprocessor.transform(input_df)
+                shap_values = shap_explainer.shap_values(input_transformed)
+
+                feature_names = (
+                    NUMERIC_FEATURES +
+                    list(shap_preprocessor.named_transformers_["cat"].get_feature_names_out(CATEGORICAL_FEATURES))
+                )
+
+                shap_df = pd.DataFrame({"Feature": feature_names, "SHAP": shap_values[0]})
+                shap_df = shap_df.reindex(shap_df["SHAP"].abs().sort_values(ascending=False).index).head(10)
+                shap_df = shap_df.sort_values("SHAP")
+
+                fig, ax = plt.subplots(figsize=(8, 4))
+                fig.patch.set_facecolor("#1c1c26")
+                ax.set_facecolor("#1c1c26")
+                colors = ["#e87a7a" if v < 0 else "#7ac47a" for v in shap_df["SHAP"]]
+                ax.barh(shap_df["Feature"], shap_df["SHAP"], color=colors, edgecolor="none", height=0.6)
+                ax.axvline(0, color="#4a4a5a", linewidth=1)
+                ax.set_xlabel("SHAP Value (impact on prediction)", color="#7a7870", fontsize=9)
+                ax.tick_params(colors="#c8c6c0", labelsize=8)
+                ax.spines[:].set_visible(False)
+                ax.xaxis.grid(True, color="#2a2a38", linewidth=0.5)
+                ax.set_axisbelow(True)
+                plt.tight_layout()
+                st.pyplot(fig)
+                plt.close()
+
+                # Top positive and negative in plain English
+                top_pos = shap_df[shap_df["SHAP"] > 0].iloc[-1]
+                top_neg = shap_df[shap_df["SHAP"] < 0].iloc[0] if (shap_df["SHAP"] < 0).any() else None
+                st.markdown(f"<div class='insight-card'>✅ <strong>Biggest boost:</strong> {top_pos['Feature']} added <strong>+{top_pos['SHAP']:.1f}%</strong> to your predicted engagement</div>", unsafe_allow_html=True)
+                if top_neg is not None:
+                    st.markdown(f"<div class='insight-card'>⬇️ <strong>Biggest drag:</strong> {top_neg['Feature']} reduced your prediction by <strong>{top_neg['SHAP']:.1f}%</strong></div>", unsafe_allow_html=True)
+            except Exception as e:
+                st.warning(f"SHAP explanation unavailable: {e}")
 
     else:
         st.info("👈 Set your post parameters in the sidebar and click **Predict Engagement Rate** to get started.")
@@ -541,6 +626,22 @@ with tab3:
         }
         feat_df = pd.DataFrame(features.items(), columns=["Feature", "Type"])
         st.dataframe(feat_df, use_container_width=True, hide_index=True)
+
+        st.markdown("#### Model Comparison")
+        st.markdown("""
+        <div class="insight-card">
+            <strong>Linear Regression</strong> · R² = 0.693, RMSE = 21.12<br>
+            Interpretable baseline. Fast, stable, consistent across CV folds (±0.0022).
+        </div>
+        <div class="insight-card">
+            <strong>XGBoost</strong> · R² = 0.9992, RMSE = 1.0886<br>
+            Gradient boosted trees. Captures non-linear interactions between features.
+        </div>
+        <div class="insight-card">
+            <strong>LightGBM</strong> · R² = 0.9991, RMSE = 1.1244<br>
+            Faster than XGBoost on large datasets. Leaf-wise tree growth for higher accuracy.
+        </div>
+        """, unsafe_allow_html=True)
 
         st.markdown("#### Tech Stack")
         st.markdown("""
