@@ -2,6 +2,16 @@
 
 A full end-to-end data science project analysing social media engagement patterns and predicting engagement rates using **PySpark** for large-scale EDA and a **scikit-learn** ML pipeline deployed via a **Streamlit** web app.
 
+## Databricks Deployment
+
+This project has been extended to run on Databricks:
+
+- **Delta Lake**: cleaned dataset stored as a versioned Delta table for ACID-compliant reads/writes
+- **MLflow**: experiment tracking for the PySpark regression pipeline (params, RMSE, R² logged per run)
+- **Git-integrated Repos**: notebook version-controlled via Databricks Repos, linked directly to this GitHub repository
+- **Workflows/Jobs**: full pipeline runs as a scheduled, non-interactive Databricks Job (not just manual notebook execution)
+
+Model results (single-fit PySpark pipeline): RMSE 0.138, R² 0.866
 ---
 
 ## 🗂️ Project Structure
